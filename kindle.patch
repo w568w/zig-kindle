@@ -1,0 +1,67 @@
+diff --git a/std/fs/Dir.zig b/std/fs/Dir.zig
+index e3c5568..ca02836 100644
+--- a/std/fs/Dir.zig
++++ b/std/fs/Dir.zig
+@@ -2689,7 +2689,7 @@ pub fn statFile(self: Dir, sub_path: []const u8) StatFileError!Stat {
+         const st = try std.os.fstatat_wasi(self.fd, sub_path, .{ .SYMLINK_FOLLOW = true });
+         return Stat.fromWasi(st);
+     }
+-    if (native_os == .linux) {
++    if (native_os == .linux and std.fs.File.support_statx) {
+         const sub_path_c = try posix.toPosixPath(sub_path);
+         var stx = std.mem.zeroes(linux.Statx);
+ 
+diff --git a/std/fs/File.zig b/std/fs/File.zig
+index 9797a1b..c7691a7 100644
+--- a/std/fs/File.zig
++++ b/std/fs/File.zig
+@@ -21,6 +21,12 @@ pub const Kind = enum {
+     unknown,
+ };
+ 
++pub const support_statx = builtin.os.version_range.linux.isAtLeast(.{
++    .major = 4,
++    .minor = 11,
++    .patch = 0,
++}) orelse false;
++
+ /// This is the default mode given to POSIX operating systems for creating
+ /// files. `0o666` is "-rw-rw-rw-" which is counter-intuitive at first,
+ /// since most people would expect "-rw-r--r--", for example, when using
+@@ -528,7 +534,7 @@ pub fn stat(self: File) StatError!Stat {
+         return Stat.fromWasi(st);
+     }
+ 
+-    if (builtin.os.tag == .linux) {
++    if (builtin.os.tag == .linux and support_statx) {
+         var stx = std.mem.zeroes(linux.Statx);
+ 
+         const rc = linux.statx(
+@@ -748,7 +754,13 @@ pub const Metadata = struct {
+     /// Exposes platform-specific functionality.
+     inner: switch (builtin.os.tag) {
+         .windows => MetadataWindows,
+-        .linux => MetadataLinux,
++        .linux => blk: {
++            if (support_statx) {
++                break :blk MetadataLinux;
++            } else {
++                break :blk MetadataUnix;
++            }
++        },
+         .wasi => MetadataWasi,
+         else => MetadataUnix,
+     },
+@@ -1061,6 +1073,12 @@ pub fn metadata(self: File) MetadataError!Metadata {
+                 };
+             },
+             .linux => blk: {
++                if (!support_statx) {
++                    // If statx is not supported, fall back to fstat
++                    break :blk .{
++                        .stat = try posix.fstat(self.handle),
++                    };
++                }
+                 var stx = std.mem.zeroes(linux.Statx);
+ 
+                 // We are gathering information for Metadata, which is meant to contain all the
